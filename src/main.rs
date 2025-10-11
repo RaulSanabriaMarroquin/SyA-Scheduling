@@ -2,7 +2,8 @@ use std::collections::VecDeque; // la cola local por estación
 use std::io::{self, Write};             // stdout + flush
 use std::sync::{mpsc, Arc, Mutex};      // mpsc = multi-producer, single-consumer (canales tipados)
 use std::thread;            // para crear hilos (std::thread::spawn)
-use std::time::Duration;    // para simular “trabajo” con thread::sleep
+use std::time::{Duration, Instant}; // Duration para sleep, Instant para medir tiempos
+    // para simular “trabajo” con thread::sleep
 
 
 // crossbeam para levantar hilos en scope
@@ -13,8 +14,12 @@ use crossbeam::thread as cb_thread;
 #[derive(Debug, Clone)]
 struct Product {
     id: u32,
-    remaining_ms: Vec<u64>, // índice = id de estación
+    remaining_ms: Vec<u64>,      // trabajo restante por estación (para RR)
+    arrival_ms: u128,            // tiempo de llegada a la línea (ms desde start)
+    enter_ms: Vec<Option<u128>>, // tiempo de entrada por estación
+    exit_ms:  Vec<Option<u128>>, // tiempo de salida por estación
 }
+
 
 // Esta es la estación de trabajo, que recibe productos por un canal y los envía a otro canal.
 //name es el nombre de la estación y service_ms es el tiempo que tarda en procesar cada producto.
@@ -46,6 +51,11 @@ fn logln(logger: &Arc<Mutex<io::Stdout>>, s: &str) {
         let _ = out.flush();
     }
 }
+
+fn now_ms(start: &Arc<Instant>) -> u128 {
+    start.elapsed().as_millis()
+}
+
 // Inputs: cfg: configuración de la estación, rx: canal de entrada, tx_next: canal de salida
 // recv() = BLOQUEA esperando un Product (hasta que llegue o hasta que se cierre el canal), retorna Result<Product, RecvError>
 // Si recv() retorna Ok(p), entonces p es el Product recibido y si retorna Err(_), el canal está cerrado.
@@ -59,6 +69,7 @@ fn run_station(
     rx: mpsc::Receiver<Product>, 
     tx_next: mpsc::Sender<Product>,
     logger: Arc<Mutex<io::Stdout>>,
+    start: Arc<Instant>,
 ) {
     let tid = thread::current().id();
     logln(
@@ -123,6 +134,11 @@ fn run_station(
                 break;
             }
             continue;
+        }
+
+        // Marcar la PRIMERA entrada a esta estación
+        if p.enter_ms[cfg.id].is_none() {
+            p.enter_ms[cfg.id] = Some(now_ms(&start));
         }
 
         // 3) Aplicar la política para decidir cuánto "servicio" hacer en este turno
@@ -210,85 +226,132 @@ fn run_station(
 
 fn main() {
     // Definimos las 3 estaciones y sus tiempos de servicio.
-    let corte      = StationCfg { id: 0, name: "Corte",      service_ms: 800  };
-    let ensamblaje = StationCfg { id: 1, name: "Ensamblaje", service_ms: 1200 };
-    let empaque    = StationCfg { id: 2, name: "Empaque",    service_ms: 600  };
-
+    let stations = [
+        StationCfg { id: 0, name: "Corte",      service_ms: 800  },
+        StationCfg { id: 1, name: "Ensamblaje", service_ms: 1200 },
+        StationCfg { id: 2, name: "Empaque",    service_ms: 600  },
+    ];
     // Definimos las políticas de cada estación
-    let policy_corte      = Policy::Fcfs;                      // FIFO/FCFS
-    let policy_ensamblaje = Policy::RoundRobin { quantum_ms: 400 }; // RR con quantum 400ms
-    let policy_empaque    = Policy::Fcfs;     
-    
-        // ===== Logger sincronizado =====
-    let logger = Arc::new(Mutex::new(io::stdout()));                 // otro algoritmo si gustas
+    let policies = [
+        Policy::Fcfs,
+        Policy::RoundRobin { quantum_ms: 400 },
+        Policy::Fcfs,
+    ];
+    // Logger sincronizado + reloj base de la simulación
+    let logger = Arc::new(Mutex::new(io::stdout()));
+    let start  = Arc::new(Instant::now());
 
     // Creamos los canales 
     // mpsc::channel::<Product>() crea un canal tipado para Product, retornando (tx, rx)
     // Se puede clonar tx para tener múltiples productores; rx es único (single-consumer).
     // Cuando todos los tx se cierran, rx.recv() retorna Err, indicando que no hay más datos.
-    let (tx_entry,  rx_entry) = mpsc::channel::<Product>(); //Entrada > Corte
-    let (tx12,      rx12)     = mpsc::channel::<Product>(); //Corte > Ensamblaje
-    let (tx23,      rx23)     = mpsc::channel::<Product>(); //Ensamblaje > Empaque
-    let (tx_sink,   rx_sink)  = mpsc::channel::<Product>(); //Empaque > Salida (Sink)
+    
+    // mpsc: pipes/colas entre estaciones
+    let (tx_entry,  rx_entry) = mpsc::channel::<Product>(); // Entrada > Corte
+    let (tx12,      rx12)     = mpsc::channel::<Product>(); // Corte > Ensamblaje
+    let (tx23,      rx23)     = mpsc::channel::<Product>(); // Ensamblaje > Empaque
+    let (tx_sink,   rx_sink)  = mpsc::channel::<Product>(); // Empaque > Sink
 
-   // ===== crossbeam::thread::scope: levantamos TODAS las tareas concurrentes =====
+    // Para resumen final
+    let total_service: u64 = stations.iter().map(|s| s.service_ms).sum();
+    let mut final_order: Vec<u32> = Vec::new();
+    let mut sum_tat: u128 = 0;   // suma Turnaround
+    let mut sum_wait: u128 = 0;  // suma Espera
+
+    // N productos + inter-arrival opcional
+    let n: u32 = 6;
+    let interarrival_ms = 150; // pon 150 si quieres ver solapamiento
+ 
+  // ===== crossbeam::thread::scope: levantamos TODAS las tareas concurrentes =====
     cb_thread::scope(|s| {
-        // Corte
+        // Lanzar estaciones
         {
+            let log = Arc::clone(&logger);
+            let t0  = Arc::clone(&start);
             let rx = rx_entry;
             let tx = tx12.clone();
-            let log = Arc::clone(&logger);
-            s.spawn(move |_| run_station(corte, policy_corte, rx, tx, log));
+            s.spawn(move |_| run_station(stations[0], policies[0], rx, tx, log, t0));
         }
-        // Ensamblaje
         {
+            let log = Arc::clone(&logger);
+            let t0  = Arc::clone(&start);
             let rx = rx12;
             let tx = tx23.clone();
-            let log = Arc::clone(&logger);
-            s.spawn(move |_| run_station(ensamblaje, policy_ensamblaje, rx, tx, log));
+            s.spawn(move |_| run_station(stations[1], policies[1], rx, tx, log, t0));
         }
-        // Empaque
         {
+            let log = Arc::clone(&logger);
+            let t0  = Arc::clone(&start);
             let rx = rx23;
             let tx = tx_sink.clone();
-            let log = Arc::clone(&logger);
-            s.spawn(move |_| run_station(empaque, policy_empaque, rx, tx, log));
+            s.spawn(move |_| run_station(stations[2], policies[2], rx, tx, log, t0));
         }
 
-        // Generador (en otro hilo dentro del mismo scope)
+        // Generador
         {
-            let stations = [corte, ensamblaje, empaque];
             let tx = tx_entry.clone();
             let log = Arc::clone(&logger);
+            let t0  = Arc::clone(&start);
             s.spawn(move |_| {
-                let n: u32 = 6;
                 for i in 1..=n {
+                    // remaining inicial = servicio por estación
                     let remaining_ms: Vec<u64> = stations.iter().map(|s| s.service_ms).collect();
-                    let p = Product { id: i, remaining_ms };
-                    logln(&log, &format!("ENTRADA(gen) : ingresa Prod {:02}", p.id));
+                    let arrival = now_ms(&t0);
+                    let p = Product {
+                        id: i,
+                        remaining_ms,
+                        arrival_ms: arrival,
+                        enter_ms: vec![None; stations.len()],
+                        exit_ms:  vec![None; stations.len()],
+                    };
+                    logln(&log, &format!("ENTRADA(gen) : Prod {:02} (arrival={}ms)", p.id, arrival));
                     tx.send(p).expect("No se pudo enviar a la entrada");
-                    // Si quieres interarrivals reales:
-                    // thread::sleep(Duration::from_millis(150));
+                    if interarrival_ms > 0 {
+                        thread::sleep(Duration::from_millis(interarrival_ms));
+                    }
                 }
-                // cerrar upstream
-                drop(tx);
+                drop(tx); // cierre upstream
             });
         }
 
-        // Sink (colector) dentro del scope
+        // Sink: calcula métricas y resumen
         {
             let log = Arc::clone(&logger);
+            let t0  = Arc::clone(&start);
             s.spawn(move |_| {
-                // En esta demo simple, sabemos cuántos entraron; podrías pasar N por algún canal si prefieres.
-                let mut count = 0u32;
+                let mut local_order: Vec<u32> = Vec::with_capacity(n as usize);
+                let mut local_sum_tat: u128 = 0;
+                let mut local_sum_wait: u128 = 0;
+
                 while let Ok(p) = rx_sink.recv() {
-                    count += 1;
-                    logln(&log, &format!("✅ SINK      : TERMINÓ Prod {:02} (count={})", p.id, count));
+                    // fin al llegar al sink
+                    let finish = now_ms(&t0);
+                    let tat = finish - p.arrival_ms;                // turnaround
+                    let wait = tat - (total_service as u128);       // espera total
+
+                    // (Opcional) log por producto con tiempos por estación:
+                    logln(&log, &format!(
+                        "SINK: Prod {:02} FIN={}ms | TAT={}ms | WAIT={}ms | Corte({:?}→{:?}) Ensam({:?}→{:?}) Empa({:?}→{:?})",
+                        p.id, finish, tat, wait,
+                        p.enter_ms[0], p.exit_ms[0],
+                        p.enter_ms[1], p.exit_ms[1],
+                        p.enter_ms[2], p.exit_ms[2]
+                    ));
+
+                    local_order.push(p.id);
+                    local_sum_tat  += tat;
+                    local_sum_wait += wait;
                 }
-                logln(&log, "🎯 SINK      : canal cerrado, fin de recolección");
+
+                // Resumen
+                let avg_tat  = local_sum_tat as f64 / n as f64;
+                let avg_wait = local_sum_wait as f64 / n as f64;
+                logln(&log, "\n======== RESUMEN ========");
+                logln(&log, &format!("Orden final de procesamiento: {:?}", local_order));
+                logln(&log, &format!("Promedio Turnaround (ms): {:.2}", avg_tat));
+                logln(&log, &format!("Promedio Espera     (ms): {:.2}", avg_wait));
+                logln(&log, "=========================\n");
             });
         }
-
-        // Al salir del scope, crossbeam espera (join) a que terminen los hilos lanzados.
     }).expect("Error en scope de crossbeam");
 }
