@@ -2,7 +2,7 @@
 
 ## Descripción del Proyecto
 
-Este proyecto implementa un simulador de línea de ensamblaje con tres estaciones conectadas en serie utilizando Rust. El objetivo es demostrar mecanismos de comunicación interprocesos (IPC), técnicas de sincronización y algoritmos de planificación de procesos.
+Este proyecto implementa un simulador de línea de ensamblaje con tres estaciones conectadas en serie utilizando Rust. El objetivo es demostrar mecanismos de comunicación interprocesos IPC, técnicas de sincronización y algoritmos de planificación de procesos.
 
 ## Arquitectura del Sistema
 
@@ -68,7 +68,7 @@ struct GlobalStats {
 ## Instalación y Ejecución
 
 ### Prerrequisitos
-- Rust (versión estable)
+- Rust
 - Cargo
 
 ### Compilación
@@ -76,28 +76,16 @@ struct GlobalStats {
 # Compilación en modo debug
 cargo build
 
-# Compilación en modo release
-cargo build --release
-```
-
-### Ejecución
-```bash
 # Ejecutar directamente
 cargo run
-
-# Ejecutar con output a archivo
-cargo run > ejecucion.log
-
-# Ejecutar versión optimizada
-cargo run --release
 ```
 
 ## Configuración
 
 ### Parámetros Modificables
-- `n`: Número de productos a procesar (por defecto: 10)
-- `interarrival_ms`: Tiempo entre llegadas (por defecto: 150ms)
-- `quantum_ms`: Quantum para Round Robin (por defecto: 400ms)
+- `n`: Número de productos a procesar (10)
+- `interarrival_ms`: Tiempo entre llegadas (por defecto 150ms)
+- `quantum_ms`: Quantum para Round Robin (por defecto 400ms)
 - Tiempos de servicio por estación
 
 ### Ejemplo de Configuración
@@ -125,9 +113,9 @@ let policies = [
 
 ### Output del Simulador
 ```
-⏳ Arranca hilo: Corte (policy=FCFS, tid=ThreadId(2))
-⏳ Arranca hilo: Ensamblaje (policy=RoundRobin, tid=ThreadId(3))
-⏳ Arranca hilo: Empaque (policy=SJF, tid=ThreadId(4))
+Arranca hilo: Corte (policy=FCFS, tid=ThreadId(2))
+Arranca hilo: Ensamblaje (policy=RoundRobin, tid=ThreadId(3))
+Arranca hilo: Empaque (policy=SJF, tid=ThreadId(4))
 
 ENTRADA(gen) : Prod 01 (arrival=0ms)
 ENTRADA(gen) : Prod 02 (arrival=150ms)
@@ -148,7 +136,7 @@ Utilización por estación:
 ## Análisis de Resultados
 
 ### Comportamiento de los Algoritmos
-- **FCFS**: Procesa productos en orden de llegada, sin interrupciones
+- **FCFS**: Procesa productos en orden de llegada sin interrupciones
 - **Round Robin**: Alterna entre productos, mejorando equidad pero con overhead de conmutación
 - **SJF**: Prioriza productos con menor tiempo restante, optimizando tiempo total
 
@@ -172,7 +160,7 @@ SyA-Scheduling/
 ├── Documentos/
 │   ├── main.tex             # Documento LaTeX del proyecto
 │   └── _PSO_TC2b__Comunicación_interprocesos.pdf
-├── target/                  # Archivos de compilación
+├── target/                 # Archivos de compilación
 ├── Cargo.toml              # Configuración del proyecto
 ├── Cargo.lock              # Lock file de dependencias
 ├── ejecucion.log           # Log de ejemplo
@@ -202,15 +190,7 @@ Este proyecto fue desarrollado como parte de un curso de Sistemas Operativos, de
 - Algoritmos de planificación
 - Programación concurrente en Rust
 
-## Licencia
-
-Este proyecto es parte de un trabajo académico y está disponible para fines educativos.
-
-## Contacto
+## Realizado por
 
 - **David Acuña López**: rodolfoide69@estudiantec.cr
 - **Raúl Sanabria Marroquín**: raulsanabria@estudiantec.cr
-
----
-
-*Tecnológico de Costa Rica - Escuela de Ingeniería en Computación*
