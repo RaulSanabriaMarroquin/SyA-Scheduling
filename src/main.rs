@@ -103,7 +103,7 @@ fn run_station(
     let tid = thread::current().id();
     logln(
         &logger,
-        &format!("⏳ Arranca hilo: {} (policy={}, tid={:?})", cfg.name, policy_name(policy), tid),
+        &format!("Arranca hilo: {} (policy={}, tid={:?})", cfg.name, policy_name(policy), tid),
     );
 
     let mut ready: VecDeque<Product> = VecDeque::new(); // Cola local de listos
@@ -112,7 +112,7 @@ fn run_station(
     loop {
         // 1) Si la cola está vacía, BLOQUEAMOS esperando al menos un item o cierre.
         if ready.is_empty() {
-            logln(&logger, &format!("{}(tid={:?}) : cola vacía → esperando recv()", cfg.name, tid));
+            logln(&logger, &format!("{}(tid={:?}) : cola vacia → esperando recv()", cfg.name, tid));
             match rx.recv() {
                 // Si llega un item, lo agregamos a la cola
                 Ok(p) => {
@@ -155,7 +155,7 @@ fn run_station(
             }
             None => {
                 if !upstream_open {
-                    logln(&logger, &format!("{}(tid={:?}) : fin (cola vacía tras cierre)", cfg.name, tid));
+                    logln(&logger, &format!("{}(tid={:?}) : fin (cola vacia tras cierre)", cfg.name, tid));
                     break;
                 }
                 continue;
@@ -168,7 +168,7 @@ fn run_station(
         // Si por alguna razón ya estaba a 0 (defensivo), solo reenviar
         if rem == 0 {
             logln(&logger, &format!(
-                "{}(tid={:?}) : Prod {:02} sin trabajo aquí → reenviar",
+                "{}(tid={:?}) : Prod {:02} sin trabajo aqui → reenviar",
                 cfg.name, tid, p.id
             ));
             if tx_next.send(p).is_err() {
@@ -210,7 +210,7 @@ fn run_station(
             logln(
                 &logger,
                 &format!(
-                    "← {}(tid={:?}) : COMPLETÓ Prod {:02} → enviar a siguiente",
+                    "← {}(tid={:?}) : COMPLETO Prod {:02} → enviar a siguiente",
                     cfg.name, tid, p.id
                 ),
             );
@@ -236,12 +236,12 @@ fn run_station(
             logln(
                 &logger,
                 &format!(
-                    "↺ {}(tid={:?}) : re-encola Prod {:02} (restante después={}ms) (cola antes={})",
+                    "↺ {}(tid={:?}) : re-encola Prod {:02} (restante despues={}ms) (cola antes={})",
                     cfg.name, tid, p.id, p.remaining_ms[cfg.id], ready.len()
                 ),
             );
             ready.push_back(p);
-            logln(&logger, &format!("{}(tid={:?}) : cola después={}", cfg.name, tid, ready.len()));
+            logln(&logger, &format!("{}(tid={:?}) : cola despues={}", cfg.name, tid, ready.len()));
         }
 
         // 4) Drenar llegadas nuevas sin bloquear
@@ -254,7 +254,7 @@ fn run_station(
             logln(
                 &logger,
                 &format!(
-                    "{}(tid={:?}) : absorbió {} llegada(s) (cola={})",
+                    "{}(tid={:?}) : absorbio {} llegada(s) (cola={})",
                     cfg.name, tid, drained, ready.len()
                 ),
             );
@@ -288,7 +288,7 @@ fn main() {
     let policies = [
         Policy::Fcfs,
         Policy::RoundRobin { quantum_ms: 400 },
-        Policy::Sjf, // Cambiamos Empaque a SJF para demostrar diferentes políticas
+        Policy::Sjf, 
     ];
     // Logger sincronizado + reloj base de la simulación
     let logger = Arc::new(Mutex::new(io::stdout()));
@@ -366,6 +366,7 @@ fn main() {
                         thread::sleep(Duration::from_millis(interarrival_ms));
                     }
                 }
+                logln(&log, "Generador: termino de enviar todos los productos");
                 drop(tx); // cierre upstream
             });
         }
@@ -375,6 +376,7 @@ fn main() {
             let log = Arc::clone(&logger);
             let t0  = Arc::clone(&start);
             s.spawn(move |_| {
+                logln(&log, "SINK: iniciando recepcion de productos");
                 let mut local_order: Vec<u32> = Vec::with_capacity(n as usize);
                 let mut local_sum_tat: u128 = 0;
                 let mut local_sum_wait: u128 = 0;
@@ -397,29 +399,27 @@ fn main() {
                     local_order.push(p.id);
                     local_sum_tat  += tat;
                     local_sum_wait += wait;
-                }
-
-                // Resumen
-                let avg_tat  = local_sum_tat as f64 / n as f64;
-                let avg_wait = local_sum_wait as f64 / n as f64;
-                logln(&log, "\n======== RESUMEN ========");
-                logln(&log, &format!("Orden final de procesamiento: {:?}", local_order));
-                logln(&log, &format!("Promedio Turnaround (ms): {:.2}", avg_tat));
-                logln(&log, &format!("Promedio Espera     (ms): {:.2}", avg_wait));
-                
-                // Mostrar estadísticas globales
-                if let Ok(total_processed) = stats.total_products_processed.lock() {
-                    logln(&log, &format!("Total productos procesados: {}", *total_processed));
-                }
-                
-                if let Ok(utilization) = stats.station_utilization.lock() {
-                    logln(&log, "Utilización por estación:");
-                    for (i, util) in utilization.iter().enumerate() {
-                        logln(&log, &format!("  {}: {:.1}%", stations[i].name, util));
+                    
+                    // Si es el producto 10, mostrar resumen inmediatamente y terminar
+                    if p.id == 10 {
+                        logln(&log, "SINK: Producto 10 recibido - generando resumen final...");
+                        break;
                     }
                 }
+
+                logln(&log, "SINK: termino de recibir todos los productos, generando resumen...");
+
+                // Resumen final de la simulación
+                let avg_tat  = local_sum_tat as f64 / n as f64;
+                let avg_wait = local_sum_wait as f64 / n as f64;
                 
-                logln(&log, "=========================\n");
+                logln(&log, "\n=== RESUMEN DE SIMULACION ===");
+                logln(&log, &format!("Orden final de procesamiento: {:?}", local_order));
+                logln(&log, &format!("Promedio Turnaround Time: {:.2} ms", avg_tat));
+                logln(&log, &format!("Promedio Tiempo de Espera: {:.2} ms", avg_wait));
+
+
+                logln(&log, "");
             });
         }
     }).expect("Error en scope de crossbeam");

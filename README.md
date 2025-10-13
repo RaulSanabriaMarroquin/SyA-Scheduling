@@ -2,7 +2,7 @@
 
 ## Descripción del Proyecto
 
-Este proyecto implementa un simulador de línea de ensamblaje con tres estaciones conectadas en serie utilizando Rust. El objetivo es demostrar mecanismos de comunicación interprocesos IPC, técnicas de sincronización y algoritmos de planificación de procesos.
+Est tarea implementa un simulador de línea de ensamblaje con tres estaciones conectadas en serie utilizando Rust. El objetivo es demostrar mecanismos de comunicación interprocesos IPC, técnicas de sincronización y algoritmos de planificación de procesos.
 
 ## Arquitectura del Sistema
 
