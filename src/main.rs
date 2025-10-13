@@ -3,7 +3,7 @@ use std::io::{self, Write};             // stdout + flush
 use std::sync::{mpsc, Arc, Mutex};      // mpsc = multi-producer, single-consumer (canales tipados)
 use std::thread;            // para crear hilos (std::thread::spawn)
 use std::time::{Duration, Instant}; // Duration para sleep, Instant para medir tiempos
-    // para simular “trabajo” con thread::sleep
+    // para simular "trabajo" con thread::sleep
 
 
 // crossbeam para levantar hilos en scope
@@ -35,12 +35,40 @@ struct StationCfg {
 enum Policy {
     Fcfs,
     RoundRobin { quantum_ms: u64 },
+    Sjf, // Shortest Job First
+}
+
+// Estructura para estadísticas globales compartidas entre hilos
+#[derive(Debug, Clone)]
+struct GlobalStats {
+    total_products_processed: Arc<Mutex<u32>>,
+    total_processing_time: Arc<Mutex<u128>>,
+    station_utilization: Arc<Mutex<Vec<f64>>>,
+}
+
+impl GlobalStats {
+    fn new(num_stations: usize) -> Self {
+        Self {
+            total_products_processed: Arc::new(Mutex::new(0)),
+            total_processing_time: Arc::new(Mutex::new(0)),
+            station_utilization: Arc::new(Mutex::new(vec![0.0; num_stations])),
+        }
+    }
+    
+    fn update_utilization(&self, station_id: usize, utilization: f64) {
+        if let Ok(mut util) = self.station_utilization.lock() {
+            if station_id < util.len() {
+                util[station_id] = utilization;
+            }
+        }
+    }
 }
 
 fn policy_name(p: Policy) -> &'static str {
     match p {
         Policy::Fcfs => "FCFS",
         Policy::RoundRobin { .. } => "RoundRobin",
+        Policy::Sjf => "SJF",
     }
 }
 
@@ -70,6 +98,7 @@ fn run_station(
     tx_next: mpsc::Sender<Product>,
     logger: Arc<Mutex<io::Stdout>>,
     start: Arc<Instant>,
+    stats: GlobalStats,
 ) {
     let tid = thread::current().id();
     logln(
@@ -102,8 +131,21 @@ fn run_station(
                 break;
             }
         }
-        // 2) Tomar el siguiente (FCFS = frente de la cola)
-        let mut p = match ready.pop_front() {
+        // 2) Tomar el siguiente según la política de scheduling
+        let p = match policy {
+            Policy::Fcfs => ready.pop_front(),
+            Policy::Sjf => {
+                // Encontrar el producto con menor tiempo restante
+                let min_idx = ready.iter()
+                    .enumerate()
+                    .min_by_key(|(_, prod)| prod.remaining_ms[cfg.id])
+                    .map(|(idx, _)| idx);
+                min_idx.map(|idx| ready.remove(idx).unwrap())
+            },
+            Policy::RoundRobin { .. } => ready.pop_front(),
+        };
+        
+        let mut p = match p {
             Some(x) => {
                 logln(&logger, &format!(
                     "{}(tid={:?}) : toma Prod {:02} (cola restante={})",
@@ -145,6 +187,7 @@ fn run_station(
         let slice = match policy {
             Policy::Fcfs => rem, // procesar TODO de un tirón
             Policy::RoundRobin { quantum_ms } => rem.min(quantum_ms),
+            Policy::Sjf => rem, // SJF también procesa todo de una vez
         };
 
         // Marca de entrada/slice
@@ -171,6 +214,16 @@ fn run_station(
                     cfg.name, tid, p.id
                 ),
             );
+            
+            // Actualizar estadísticas globales
+            if let Ok(mut count) = stats.total_products_processed.lock() {
+                *count += 1;
+            }
+            
+            // Calcular utilización de la estación
+            let utilization = (slice as f64) / (cfg.service_ms as f64) * 100.0;
+            stats.update_utilization(cfg.id, utilization);
+            
             // Enviar a la siguiente estación
             if tx_next.send(p).is_err() {
                 logln(&logger, &format!("{}(tid={:?}) : downstream cerrado → fin", cfg.name, tid));
@@ -235,11 +288,14 @@ fn main() {
     let policies = [
         Policy::Fcfs,
         Policy::RoundRobin { quantum_ms: 400 },
-        Policy::Fcfs,
+        Policy::Sjf, // Cambiamos Empaque a SJF para demostrar diferentes políticas
     ];
     // Logger sincronizado + reloj base de la simulación
     let logger = Arc::new(Mutex::new(io::stdout()));
     let start  = Arc::new(Instant::now());
+    
+    // Estadísticas globales compartidas
+    let stats = GlobalStats::new(stations.len());
 
     // Creamos los canales 
     // mpsc::channel::<Product>() crea un canal tipado para Product, retornando (tx, rx)
@@ -254,12 +310,9 @@ fn main() {
 
     // Para resumen final
     let total_service: u64 = stations.iter().map(|s| s.service_ms).sum();
-    let mut final_order: Vec<u32> = Vec::new();
-    let mut sum_tat: u128 = 0;   // suma Turnaround
-    let mut sum_wait: u128 = 0;  // suma Espera
 
     // N productos + inter-arrival opcional
-    let n: u32 = 6;
+    let n: u32 = 10; // Generar al menos 10 productos para mejor análisis
     let interarrival_ms = 150; // pon 150 si quieres ver solapamiento
  
   // ===== crossbeam::thread::scope: levantamos TODAS las tareas concurrentes =====
@@ -268,23 +321,26 @@ fn main() {
         {
             let log = Arc::clone(&logger);
             let t0  = Arc::clone(&start);
+            let stats_clone = stats.clone();
             let rx = rx_entry;
             let tx = tx12.clone();
-            s.spawn(move |_| run_station(stations[0], policies[0], rx, tx, log, t0));
+            s.spawn(move |_| run_station(stations[0], policies[0], rx, tx, log, t0, stats_clone));
         }
         {
             let log = Arc::clone(&logger);
             let t0  = Arc::clone(&start);
+            let stats_clone = stats.clone();
             let rx = rx12;
             let tx = tx23.clone();
-            s.spawn(move |_| run_station(stations[1], policies[1], rx, tx, log, t0));
+            s.spawn(move |_| run_station(stations[1], policies[1], rx, tx, log, t0, stats_clone));
         }
         {
             let log = Arc::clone(&logger);
             let t0  = Arc::clone(&start);
+            let stats_clone = stats.clone();
             let rx = rx23;
             let tx = tx_sink.clone();
-            s.spawn(move |_| run_station(stations[2], policies[2], rx, tx, log, t0));
+            s.spawn(move |_| run_station(stations[2], policies[2], rx, tx, log, t0, stats_clone));
         }
 
         // Generador
@@ -350,6 +406,19 @@ fn main() {
                 logln(&log, &format!("Orden final de procesamiento: {:?}", local_order));
                 logln(&log, &format!("Promedio Turnaround (ms): {:.2}", avg_tat));
                 logln(&log, &format!("Promedio Espera     (ms): {:.2}", avg_wait));
+                
+                // Mostrar estadísticas globales
+                if let Ok(total_processed) = stats.total_products_processed.lock() {
+                    logln(&log, &format!("Total productos procesados: {}", *total_processed));
+                }
+                
+                if let Ok(utilization) = stats.station_utilization.lock() {
+                    logln(&log, "Utilización por estación:");
+                    for (i, util) in utilization.iter().enumerate() {
+                        logln(&log, &format!("  {}: {:.1}%", stations[i].name, util));
+                    }
+                }
+                
                 logln(&log, "=========================\n");
             });
         }

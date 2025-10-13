@@ -91,6 +91,15 @@ cargo new tarea-2 --bin
 \end{verbatim}
 Se utilizó la biblioteca estándar de Rust (\texttt{std::sync::mpsc}) como cola/pipe entre estaciones. Para organizar hilos se usó \texttt{crossbeam::thread::scope} y para serializar la salida se empleó \texttt{Arc<Mutex<io::Stdout>>}, cumpliendo con los requerimientos: \texttt{mpsc}, \texttt{crossbeam}, \texttt{Arc<Mutex<...>}}.
 
+\subsection{Dependencias del proyecto}
+El proyecto utiliza las siguientes dependencias principales:
+\begin{itemize}
+    \item \texttt{crossbeam}: Para manejo seguro de hilos con scope
+    \item \texttt{std::sync::mpsc}: Para comunicación interprocesos mediante canales tipados
+    \item \texttt{std::sync::Arc<Mutex<...>>}: Para sincronización y exclusión mutua
+    \item \texttt{std::collections::VecDeque}: Para colas locales en cada estación
+\end{itemize}
+
 \subsection{Implementación del simulador}
 \textbf{Estructura de la línea.} Tres estaciones: \textit{Corte}, \textit{Ensamblaje}, \textit{Empaque}. Cada estación corre en un hilo independiente y mantiene una cola local (\texttt{VecDeque}) de productos listos.
 
@@ -102,7 +111,14 @@ El envío (\texttt{send}) transfiere propiedad del \texttt{Product} al siguiente
 
 \textbf{Sincronización.} Un hilo por estación asegura un producto a la vez por estación. Se usó \texttt{Arc<Mutex<...>}} para serializar logs y evidenciar exclusión (sin mezclar \textit{prints}). El diseño evita interbloqueos al no compartir estado mutable entre estaciones (flujo unidireccional).
 
-\textbf{Algoritmos de scheduling.} \textit{Corte}=FCFS (un solo \textit{slice} = servicio completo). \textit{Ensamblaje}=Round Robin (\textit{slice} = $\min(\textit{restante}, \textit{quantum})$; si queda trabajo, se re-encola). \textit{Empaque}=FCFS.
+\textbf{Algoritmos de scheduling.} \textit{Corte}=FCFS (un solo \textit{slice} = servicio completo). \textit{Ensamblaje}=Round Robin (\textit{slice} = $\min(\textit{restante}, \textit{quantum})$; si queda trabajo, se re-encola). \textit{Empaque}=SJF (Shortest Job First) para demostrar diferentes políticas de planificación.
+
+\textbf{Estadísticas globales.} Se implementó una estructura \texttt{GlobalStats} compartida entre hilos que registra:
+\begin{itemize}
+    \item Total de productos procesados
+    \item Tiempo total de procesamiento
+    \item Utilización por estación (porcentaje de tiempo activo)
+\end{itemize}
 
 \textbf{Simulación temporal.} Se usa \texttt{thread::sleep()} por \textit{slice}. El \textit{quantum} de RR fuerza reanudaciones (re-encolado).
 
@@ -171,10 +187,12 @@ Promedio WAIT (ms) & YYYY & Corte/Empaque=FCFS \\
 \end{tabular}
 \end{table}
 
-\noindent\textbf{Análisis.} Con RR en \textit{Ensamblaje}, el \textit{quantum} introduce alternancia entre productos, mejorando la equidad percibida. FCFS en \textit{Corte}/\textit{Empaque} reduce la sobrecarga de re-encolado en etapas no críticas. El cuello de botella se observa típicamente en \textit{Ensamblaje} (servicio más alto); al disminuir el \textit{quantum}, aumentan las conmutaciones (más rebanadas) pero se homogeniza la espera.
+\noindent\textbf{Análisis.} Con RR en \textit{Ensamblaje}, el \textit{quantum} introduce alternancia entre productos, mejorando la equidad percibida. FCFS en \textit{Corte} reduce la sobrecarga de re-encolado en la primera etapa. SJF en \textit{Empaque} prioriza productos con menor tiempo restante, optimizando el tiempo total de procesamiento. El cuello de botella se observa típicamente en \textit{Ensamblaje} (servicio más alto: 1200ms); al disminuir el \textit{quantum}, aumentan las conmutaciones pero se homogeniza la espera.
+
+\textbf{Métricas de utilización.} Las estadísticas globales muestran el porcentaje de tiempo activo por estación, permitiendo identificar cuellos de botella y optimizar la distribución de carga. La implementación con \texttt{Arc<Mutex<...>>} garantiza acceso thread-safe a las estadísticas compartidas.
 
 \subsection{Conclusiones}
-Se implementó una línea de ensamblaje con hilos y colas \texttt{mpsc} que satisface los requerimientos de IPC, sincronización y planificación. Se registraron métricas de llegada, entrada/salida por estación, \textit{turnaround} y espera, además de promedios y orden final. La simulación temporal con \texttt{sleep()} y \textit{quantum} reflejó el comportamiento esperado de FCFS y RR. Como trabajo futuro, se propone evaluar SJF/LCFS, colas acotadas y procesos en lugar de hilos.
+Se implementó una línea de ensamblaje con hilos y colas \texttt{mpsc} que satisface los requerimientos de IPC, sincronización y planificación. Se registraron métricas de llegada, entrada/salida por estación, \textit{turnaround} y espera, además de promedios y orden final. La simulación temporal con \texttt{sleep()} y \textit{quantum} reflejó el comportamiento esperado de FCFS, RR y SJF. Se demostró la efectividad de diferentes algoritmos de scheduling en diferentes etapas del proceso. Como trabajo futuro, se propone evaluar LCFS, colas acotadas, procesos en lugar de hilos, y análisis de throughput bajo diferentes cargas.
 
 \subsection{Discusiones}
 El uso de \texttt{Arc<Mutex<...>}} para los logs demuestra exclusión sin introducir contención en el camino crítico del servicio. La arquitectura basada en paso de mensajes evita carreras e interbloqueos. La precisión temporal depende de \texttt{sleep()} del SO; para análisis fino podría instrumentarse un simulador discreto o trazas de alta resolución.
