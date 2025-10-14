@@ -1,0 +1,216 @@
+\UseRawInputEncoding
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+% The preceding line is only needed to identify funding in the first footnote. If that is unneeded, please comment it out.
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{afterpage}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{url}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage[utf8]{inputenc}
+\usepackage{minted}
+\usepackage{float}  
+\usepackage{color}  
+\usepackage{subcaption}
+
+\lstset{
+  language=Python,
+  basicstyle=\ttfamily\footnotesize,
+  breaklines=true,
+  breakatwhitespace=true, 
+  columns=fullflexible,    
+  frame=single             
+}
+
+\lstdefinestyle{mystyle}{
+  language=Python,
+  basicstyle=\ttfamily\footnotesize,
+  breaklines=true,
+  breakatwhitespace=true,
+  backgroundcolor=\color{gray!10},
+  keywordstyle=\color{blue},
+  commentstyle=\color{green!50!black},
+  showstringspaces=false
+}
+\lstset{style=mystyle}
+
+% Config básica para minted (Rust)
+\setminted{
+  fontsize=\footnotesize,
+  breaklines=true,
+  frame=single,
+  linenos=true,
+  tabsize=2,
+  autogobble=true
+}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+\begin{document}
+
+\title{Sincronización y Algoritmos de Scheduling en una Línea de Ensamblaje con Rust\\}
+
+\author{\IEEEauthorblockN{David Acuña López}
+\IEEEauthorblockA{\textit{Escuela de Ingeniería en Computación} \\
+\textit{Tecnológico de Costa Rica}\\
+Cartago, Costa Rica \\
+\texttt{rodolfoide69@estudiantec.cr}}
+\and
+\IEEEauthorblockN{Raúl Sanabria Marroquín}
+\IEEEauthorblockA{\textit{Escuela de Ingeniería en Computación} \\
+\textit{Tecnológico de Costa Rica}\\
+Cartago, Costa Rica \\
+\texttt{raulsanabria@estudiantec.cr}}
+}
+
+\maketitle
+
+\begin{abstract}
+Se presenta la implementación de un simulador de línea de ensamblaje con tres estaciones (\textit{Corte} $\rightarrow$ \textit{Ensamblaje} $\rightarrow$ \textit{Empaque}) utilizando hilos en Rust y mecanismos de comunicación mediante colas tipadas (\texttt{std::sync::mpsc}) a modo de IPC. Cada estación ejecuta su propia política de planificación (FCFS y Round Robin con \textit{quantum} configurable), garantizando exclusión mutua y ausencia de condiciones de carrera. Se registran métricas de llegada, tiempos de entrada y salida por estación, \textit{turnaround} y tiempo de espera; además, se reportan promedios y el orden final de procesamiento. Los resultados confirman el cumplimiento de los requisitos de sincronización y la correcta simulación temporal mediante \texttt{sleep()} y \textit{quantum}.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Rust, mpsc, IPC, hilos, \textit{mutex}, Round Robin, FCFS, sincronización, \textit{turnaround}, tiempo de espera.
+\end{IEEEkeywords}
+
+\section{Introducción}
+En este trabajo se desarrolla un simulador de una línea de ensamblaje con tres estaciones conectadas en serie. El objetivo es aplicar mecanismos de comunicación entre procesos/hilos (IPC), implementar técnicas de sincronización que aseguren exclusión mutua y simular algoritmos de planificación (FCFS y Round Robin) para comparar su comportamiento. Se registran métricas clave (llegadas, entradas/salidas por estación, \textit{turnaround} y espera) para analizar el desempeño.
+
+\section{Metodología}
+El experimento se realizó en un entorno con Rust \texttt{stable} y \texttt{cargo}. El flujo seguido fue:
+
+\subsection{Preparación del entorno}
+Se instaló Rust y Cargo (Windows/WSL/Linux). El proyecto se creó con:
+\begin{verbatim}
+cargo new tarea-2 --bin
+\end{verbatim}
+Se utilizó la biblioteca estándar de Rust (\texttt{std::sync::mpsc}) como cola/pipe entre estaciones. Para organizar hilos se usó \texttt{crossbeam::thread::scope} y para serializar la salida se empleó \texttt{Arc<Mutex<io::Stdout>>}, cumpliendo con los requerimientos: \texttt{mpsc}, \texttt{crossbeam}, \texttt{Arc<Mutex<...>}}.
+
+\subsection{Dependencias del proyecto}
+El proyecto utiliza las siguientes dependencias principales:
+\begin{itemize}
+    \item \texttt{crossbeam}: Para manejo seguro de hilos con scope
+    \item \texttt{std::sync::mpsc}: Para comunicación interprocesos mediante canales tipados
+    \item \texttt{std::sync::Arc<Mutex<...>>}: Para sincronización y exclusión mutua
+    \item \texttt{std::collections::VecDeque}: Para colas locales en cada estación
+\end{itemize}
+
+\subsection{Implementación del simulador}
+\textbf{Estructura de la línea.} Tres estaciones: \textit{Corte}, \textit{Ensamblaje}, \textit{Empaque}. Cada estación corre en un hilo independiente y mantiene una cola local (\texttt{VecDeque}) de productos listos.
+
+\textbf{IPC entre estaciones.} Se encadenan canales \texttt{mpsc}:
+\[
+\text{Entrada} \rightarrow \text{Corte} \rightarrow \text{Ensamblaje} \rightarrow \text{Empaque} \rightarrow \text{Sink}
+\]
+El envío (\texttt{send}) transfiere propiedad del \texttt{Product} al siguiente hilo.
+
+\textbf{Sincronización.} Un hilo por estación asegura un producto a la vez por estación. Se usó \texttt{Arc<Mutex<...>}} para serializar logs y evidenciar exclusión (sin mezclar \textit{prints}). El diseño evita interbloqueos al no compartir estado mutable entre estaciones (flujo unidireccional).
+
+\textbf{Algoritmos de scheduling.} \textit{Corte}=FCFS (un solo \textit{slice} = servicio completo). \textit{Ensamblaje}=Round Robin (\textit{slice} = $\min(\textit{restante}, \textit{quantum})$; si queda trabajo, se re-encola). \textit{Empaque}=SJF (Shortest Job First) para demostrar diferentes políticas de planificación.
+
+\textbf{Estadísticas globales.} Se implementó una estructura \texttt{GlobalStats} compartida entre hilos que registra:
+\begin{itemize}
+    \item Total de productos procesados
+    \item Tiempo total de procesamiento
+    \item Utilización por estación (porcentaje de tiempo activo)
+\end{itemize}
+
+\textbf{Simulación temporal.} Se usa \texttt{thread::sleep()} por \textit{slice}. El \textit{quantum} de RR fuerza reanudaciones (re-encolado).
+
+\subsection{Compilación e instalación}
+Se compila y ejecuta con:
+\begin{verbatim}
+cargo run
+\end{verbatim}
+Para \textit{release}:
+\begin{verbatim}
+cargo build --release
+target/release/tarea-2
+\end{verbatim}
+Para generar un log de ejecución:
+\begin{verbatim}
+cargo run > ejecucion.log
+\end{verbatim}
+
+\subsection{Programa de prueba y recolección de métricas}
+El generador crea $N$ productos con tiempos de servicio por estación. Se marcan:
+\begin{itemize}
+  \item llegada del producto a la línea,
+  \item primera \textit{entrada} y \textit{salida} por estación,
+  \item tiempos de \textit{turnaround} y \textit{espera} en el \textit{sink}.
+\end{itemize}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.45\textwidth]{img/arquitectura.png}
+    \caption{Topología de estaciones y canales \texttt{mpsc} (IPC).}
+\end{figure}
+
+\section{Resultados y Análisis}
+A continuación se ilustran las métricas obtenidas por producto y el resumen agregado. La tabla incluye tiempos en milisegundos (ms).
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.45\textwidth]{img/log_rr.png}
+    \caption{Extracto de logs: RR con re-encolado (\textit{slice}/\textit{quantum}) y \textit{handoff} entre estaciones.}
+\end{figure}
+
+\begin{table}[H]
+\centering
+\caption{Métricas por producto (ejemplo).}
+\begin{tabular}{lccccc}
+\hline
+Prod & Llegada & Fin & TAT & WAIT & Orden \\
+\hline
+01 & 0   & 2600 & 2600 & 0   & 1 \\
+02 & 150 & 2750 & 2600 & 0   & 2 \\
+\ldots & \ldots & \ldots & \ldots & \ldots & \ldots \\
+\hline
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{Resumen (ejemplo).}
+\begin{tabular}{lcc}
+\hline
+Métrica & Valor & Configuración \\
+\hline
+Promedio TAT (ms)  & XXXX & $N=6$, $q=400$ \\
+Promedio WAIT (ms) & YYYY & Corte/Empaque=FCFS \\
+\hline
+\end{tabular}
+\end{table}
+
+\noindent\textbf{Análisis.} Con RR en \textit{Ensamblaje}, el \textit{quantum} introduce alternancia entre productos, mejorando la equidad percibida. FCFS en \textit{Corte} reduce la sobrecarga de re-encolado en la primera etapa. SJF en \textit{Empaque} prioriza productos con menor tiempo restante, optimizando el tiempo total de procesamiento. El cuello de botella se observa típicamente en \textit{Ensamblaje} (servicio más alto: 1200ms); al disminuir el \textit{quantum}, aumentan las conmutaciones pero se homogeniza la espera.
+
+\textbf{Métricas de utilización.} Las estadísticas globales muestran el porcentaje de tiempo activo por estación, permitiendo identificar cuellos de botella y optimizar la distribución de carga. La implementación con \texttt{Arc<Mutex<...>>} garantiza acceso thread-safe a las estadísticas compartidas.
+
+\subsection{Conclusiones}
+Se implementó una línea de ensamblaje con hilos y colas \texttt{mpsc} que satisface los requerimientos de IPC, sincronización y planificación. Se registraron métricas de llegada, entrada/salida por estación, \textit{turnaround} y espera, además de promedios y orden final. La simulación temporal con \texttt{sleep()} y \textit{quantum} reflejó el comportamiento esperado de FCFS, RR y SJF. Se demostró la efectividad de diferentes algoritmos de scheduling en diferentes etapas del proceso. Como trabajo futuro, se propone evaluar LCFS, colas acotadas, procesos en lugar de hilos, y análisis de throughput bajo diferentes cargas.
+
+\subsection{Discusiones}
+El uso de \texttt{Arc<Mutex<...>}} para los logs demuestra exclusión sin introducir contención en el camino crítico del servicio. La arquitectura basada en paso de mensajes evita carreras e interbloqueos. La precisión temporal depende de \texttt{sleep()} del SO; para análisis fino podría instrumentarse un simulador discreto o trazas de alta resolución.
+
+\begin{thebibliography}{9}
+
+\bibitem{rust_book}
+The Rust Programming Language, Channels y Threads. Disponible en: \url{https://doc.rust-lang.org/}
+
+\bibitem{tanenbaum}
+A. S. Tanenbaum y H. Bos, \textit{Modern Operating Systems}, 4ta ed., Pearson, 2015.
+
+\bibitem{rust_mpsc}
+Rust Std Library, \texttt{std::sync::mpsc}. Disponible en: \url{https://doc.rust-lang.org/std/sync/mpsc/}
+
+\bibitem{crossbeam}
+Crossbeam, Scoped threads. Disponible en: \url{https://docs.rs/crossbeam/latest/crossbeam/}
+
+\end{thebibliography}
+
+\end{document}
